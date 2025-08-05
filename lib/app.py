@@ -70,18 +70,41 @@ bridge = GeminiBridge()
 # ------------------------------------------------------------------
 # WebSocket Flask
 # ------------------------------------------------------------------
+def transcription_sender(ws):
+    """Écoute la file de sortie et envoie les transcriptions au client."""
+    while not ws.closed:
+        try:
+            txt = bridge.get_transcript()
+            if txt:
+                print("🎤 Transcription ->", txt)
+                ws.send(txt)
+            # Petite pause pour ne pas surcharger le CPU
+            threading.Event().wait(0.1)
+        except Exception as e:
+            print(f"Erreur dans le sender : {e}")
+            break
+
 @sock.route('/ws/transcribe')
 def transcribe(ws):
     print("🟢 Client connected")
-    while True:
-        audio_chunk = ws.receive()          # bytes
-        print(f"📦 Received {len(audio_chunk)} bytes")
-        bridge.send_audio(audio_chunk)
+    # Crée et démarre un thread pour envoyer les transcriptions
+    sender_thread = threading.Thread(target=transcription_sender, args=(ws,))
+    sender_thread.daemon = True
+    sender_thread.start()
 
-        # also echo the last transcription if any
-        txt = bridge.get_transcript()
-        if txt:
-            print("🎤 Transcription ->", txt)
-            ws.send(txt)
+    try:
+        while not ws.closed:
+            # Attend et reçoit les données audio du client
+            audio_chunk = ws.receive()
+            if audio_chunk is None:
+                break
+            print(f"📦 Received {len(audio_chunk)} bytes")
+            bridge.send_audio(audio_chunk)
+    except Exception as e:
+        print(f"Erreur de réception: {e}")
+    finally:
+        print("🔴 Client disconnected")
+        # Le thread sender s'arrêtera car ws.closed sera True
+
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=6000, debug=True)
