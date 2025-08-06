@@ -6,7 +6,7 @@ import queue
 from dotenv import load_dotenv
 from flask import Flask
 from flask_sock import Sock
-from google import genai
+import google.generativeai as genai
 
 load_dotenv()
 
@@ -15,6 +15,9 @@ MODEL      = "gemini-live-2.5-flash-preview"
 
 app  = Flask(__name__)
 sock = Sock(app)
+
+# Ensemble pour stocker toutes les connexions client WebSocket actives
+clients = set()
 
 # ------------------------------------------------------------------
 # Pont vers Gemini Live (thread asyncio dédié)
@@ -59,38 +62,67 @@ class GeminiBridge:
     def send_audio(self, data: bytes):
         self.in_q.put(data)
 
-    def get_transcript(self):
-        try:
-            return self.out_q.get_nowait()
-        except queue.Empty:
-            return None
+# --- Pont de simulation pour les tests sans clé API ---
+class MockGeminiBridge:
+    def __init__(self):
+        self.out_q = queue.Queue()
+        self.msg_counter = 0
 
-bridge = GeminiBridge()
+    def send_audio(self, data: bytes):
+        self.msg_counter += 1
+        # Simule une transcription après avoir reçu des données audio
+        msg = f"Message simulé #{self.msg_counter}"
+        print(f"[MOCK] Génération du message : '{msg}'")
+        self.out_q.put(msg)
+
+# --- Sélection du pont à utiliser ---
+# Mettre à False pour utiliser le vrai pont Gemini avec une clé API valide
+USE_MOCK_BRIDGE = True
+
+if USE_MOCK_BRIDGE:
+    print("--- ATTENTION : Utilisation du pont de simulation (Mock Bridge) ---")
+    bridge = MockGeminiBridge()
+else:
+    bridge = GeminiBridge()
+
+
+# ------------------------------------------------------------------
+# Thread de Diffusion (Broadcast)
+# ------------------------------------------------------------------
+def broadcast_transcriptions():
+    """
+    Récupère les transcriptions depuis le pont Gemini et les diffuse
+    à tous les clients connectés.
+    """
+    while True:
+        # Attend qu'une transcription soit disponible dans la file
+        txt = bridge.out_q.get()
+        if txt:
+            print(f"🎤 Diffusion -> {txt}")
+            # Crée une copie de l'ensemble pour éviter les erreurs de concurrence
+            # si un client se connecte/déconnecte pendant la diffusion
+            clients_copy = clients.copy()
+            for client_ws in clients_copy:
+                try:
+                    client_ws.send(txt)
+                except Exception as e:
+                    # Gère le cas où un client s'est déconnecté subitement
+                    print(f"Erreur lors de l'envoi à un client : {e}")
+
+
+# Démarrer le thread de diffusion une seule fois
+broadcaster_thread = threading.Thread(target=broadcast_transcriptions, daemon=True)
+broadcaster_thread.start()
+
 
 # ------------------------------------------------------------------
 # WebSocket Flask
 # ------------------------------------------------------------------
-def transcription_sender(ws):
-    """Écoute la file de sortie et envoie les transcriptions au client."""
-    while not ws.closed:
-        try:
-            txt = bridge.get_transcript()
-            if txt:
-                print("🎤 Transcription ->", txt)
-                ws.send(txt)
-            # Petite pause pour ne pas surcharger le CPU
-            threading.Event().wait(0.1)
-        except Exception as e:
-            print(f"Erreur dans le sender : {e}")
-            break
-
 @sock.route('/ws/transcribe')
 def transcribe(ws):
-    print("🟢 Client connected")
-    # Crée et démarre un thread pour envoyer les transcriptions
-    sender_thread = threading.Thread(target=transcription_sender, args=(ws,))
-    sender_thread.daemon = True
-    sender_thread.start()
+    # Ajoute le nouveau client à l'ensemble des clients actifs
+    clients.add(ws)
+    print(f"🟢 Client connecté. Total : {len(clients)}")
 
     try:
         while not ws.closed:
@@ -98,13 +130,14 @@ def transcribe(ws):
             audio_chunk = ws.receive()
             if audio_chunk is None:
                 break
-            print(f"📦 Received {len(audio_chunk)} bytes")
+            print(f"📦 Reçu {len(audio_chunk)} bytes d'un client")
             bridge.send_audio(audio_chunk)
     except Exception as e:
-        print(f"Erreur de réception: {e}")
+        print(f"Erreur de réception : {e}")
     finally:
-        print("🔴 Client disconnected")
-        # Le thread sender s'arrêtera car ws.closed sera True
+        # Retire le client de l'ensemble lors de la déconnexion
+        clients.remove(ws)
+        print(f"🔴 Client déconnecté. Total : {len(clients)}")
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=6000, debug=True)

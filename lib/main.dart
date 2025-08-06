@@ -35,13 +35,13 @@ class LiveTranscriptionScreen extends StatefulWidget {
 }
 
 class _LiveTranscriptionScreenState extends State<LiveTranscriptionScreen> {
-  // Adresse du serveur Live (ngrok ou IP locale)
-  final String _serverUrl = 'ws://192.168.19.53:6000/ws/transcribe';
+  // Adresse du serveur Live. Remplacée par localhost pour le développement.
+  final String _serverUrl = 'ws://127.0.0.1:6000/ws/transcribe';
   WebSocketChannel? _channel;
   late final FlutterAudioCapture _recorder;
 
   String _statusMessage = '';
-  String _fullTranscription = '';
+  final List<String> _messages = []; // Remplacé _fullTranscription par une liste
   bool _isConnected = false;
   bool _isRecording = false;
   final ScrollController _scrollController = ScrollController();
@@ -66,7 +66,7 @@ class _LiveTranscriptionScreenState extends State<LiveTranscriptionScreen> {
       _channel!.stream.listen(
         (text) {
           setState(() {
-            _fullTranscription += text;
+            _messages.add(text); // Ajoute le message à la liste
           });
           _scrollToBottom();
         },
@@ -131,14 +131,18 @@ class _LiveTranscriptionScreenState extends State<LiveTranscriptionScreen> {
 
   /* ---------- UI ---------- */
   void _scrollToBottom() => WidgetsBinding.instance.addPostFrameCallback(
-    (_) => _scrollController.animateTo(
-      _scrollController.position.maxScrollExtent,
-      duration: const Duration(milliseconds: 300),
-      curve: Curves.easeOut,
-    ),
+    (_) {
+      if (_scrollController.hasClients) {
+        _scrollController.animateTo(
+          _scrollController.position.maxScrollExtent,
+          duration: const Duration(milliseconds: 300),
+          curve: Curves.easeOut,
+        );
+      }
+    },
   );
 
-  void _clear() => setState(() => _fullTranscription = '');
+  void _clear() => setState(() => _messages.clear()); // Vide la liste
 
   @override
   void dispose() {
@@ -153,9 +157,9 @@ class _LiveTranscriptionScreenState extends State<LiveTranscriptionScreen> {
     print(_statusMessage);
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Live'),
+        title: const Text('Live Chat'), // Titre mis à jour
         actions: [
-          if (_fullTranscription.isNotEmpty)
+          if (_messages.isNotEmpty) // Condition sur la liste
             IconButton(
               icon: const Icon(Icons.clear),
               onPressed: _clear,
@@ -183,16 +187,26 @@ class _LiveTranscriptionScreenState extends State<LiveTranscriptionScreen> {
                 ),
               ),
             ),
-
             const SizedBox(height: 16),
+            // Remplacé SingleChildScrollView par un ListView.builder
             Expanded(
-              child: SingleChildScrollView(
-                controller: _scrollController,
-                child: Text(
-                  _fullTranscription.isEmpty ? 'Parlez…' : _fullTranscription,
-                  style: const TextStyle(fontSize: 18),
-                ),
-              ),
+              child: _messages.isEmpty
+                  ? const Center(
+                      child: Text(
+                        'Parlez… les messages apparaîtront ici.',
+                        style: TextStyle(fontSize: 16, color: Colors.grey),
+                      ),
+                    )
+                  : ListView.builder(
+                      controller: _scrollController,
+                      itemCount: _messages.length,
+                      itemBuilder: (context, index) {
+                        return ListTile(
+                          title: Text(_messages[index]),
+                          dense: true,
+                        );
+                      },
+                    ),
             ),
             const SizedBox(height: 16),
             Row(
